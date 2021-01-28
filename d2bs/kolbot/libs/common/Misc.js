@@ -57,6 +57,8 @@ var Skill = {
 		case 38: // Charged Bolt
 			return 6;
 		case 48: // Nova
+			//return 7; CORRECT ONE
+			return 3; // telestomp range
 		case 151: // Whirlwind
 			return 7;
 		case 92: // Poison Nova
@@ -384,14 +386,25 @@ MainLoop:
 			return false;
 		}
 
-		// Charged skills must be cast from right hand
 		if (hand === undefined || hand === 3 || item) {
-			item && hand !== 0 && print('[ÿc9Warningÿc0] charged skills must be cast from right hand');
 			hand = 0;
 		}
 
 		if (me.setSkill(skillId, hand, item)) {
 			return true;
+		}
+
+		return false;
+	},
+
+	// Charged skill
+	getCharge: function (skillId) {
+		var i;
+
+		for (i = 0; i < this.charges.length; i += 1) {
+			if (this.charges[i].skill === skillId && me.getSkill(skillId, 0) === this.charges[i].level && me.getSkill(skillId, 0) === me.getSkill(skillId, 1)) {
+				return this.charges[i];
+			}
 		}
 
 		return false;
@@ -460,8 +473,12 @@ var Item = {
 	hasTier: function (item) {
 		return Config.AutoEquip && NTIP.GetTier(item) > 0;
 	},
+	
+	hasMercTier: function (item) {
+		return Config.AutoEquip && NTIP.GetMercTier(item) > 0 && !me.classic;
+	},
 
-	canEquip: function (item) {
+	canEquip: function (item, bodyLoc) {
 		if (item.type !== 4) { // Not an item
 			return false;
 		}
@@ -469,17 +486,525 @@ var Item = {
 		if (!item.getFlag(0x10)) { // Unid item
 			return false;
 		}
+		
+		return me.charlvl >= item.getStat(92) && Item.getMyHardStats(0) >= item.strreq && Item.getMyHardStats(2) >= item.dexreq;
+	},
+	
+	canEquipMerc: function (item, bodyLoc) {
+		if (item.type !== 4 || me.classic) { // Not an item
+			return false;
+		}
 
-		if (item.getStat(92) > me.getStat(12) || item.dexreq > me.getStat(2) || item.strreq > me.getStat(0)) { // Higher requirements
+		let merc = me.getMerc();
+
+		if (!merc) { // dont have merc or he is dead
+			return false;
+		}
+
+		if (!item.getFlag(0x10)) { // Unid item
+			return false;
+		}
+
+		let curr = this.getEquippedItemMerc(bodyLoc);
+
+		if (item.getStat(92) > merc.getStat(12) || item.dexreq > merc.getStat(2) - curr.dex || item.strreq > merc.getStat(0) - curr.str) { // Higher requirements
 			return false;
 		}
 
 		return true;
 	},
 
+	getMyHardStats: function (type) {
+		this.validItem = function (item) {
+			// ignore item bonuses from secondary weapon slot
+			if (me.gametype === 1 && [11, 12].indexOf(item.bodylocation) > -1) {
+				return false;
+			}
+
+			// check if character meets str, dex, and level requirement since stat bonuses only apply when they are active
+			return me.getStat(0) >= item.strreq && me.getStat(2) >= item.dexreq && me.charlvl >= item.lvlreq;
+		};
+
+		this.setBonus = function (type) { //get stats from set bonuses
+			if (type === 1 || type === 3) { //set bonuses does not have energy or vitality (we can ignore this)
+				return 0;
+			}
+
+			var sets = { //these are the only sets with possible stat bonuses
+				"angelic": [], "artic": [], "civerb": [], "iratha": [],
+				"isenhart": [], "vidala": [], "cowking": [], "disciple": [],
+				"griswold": [], "mavina": [], "naj": [], "orphan": []
+			};
+
+			var i, j, setStat = 0,
+				items = me.getItems();
+
+			if (items) {
+				for (i = 0; i < items.length; i += 1) {
+					if (items[i].mode === 1 && items[i].quality === 5 && this.validItem(items[i])) {
+						idSwitch:
+							switch (items[i].classid) {
+								case 311: //crown
+									if (items[i].getStat(41) === 30) { //light resist
+										sets.iratha.push(items[i]);
+									}
+
+									break;
+								case 337: //light gauntlet
+									if (items[i].getStat(7) === 20) { //life
+										sets.artic.push(items[i]);
+									} else if (items[i].getStat(43) === 30) { //cold resist
+										sets.iratha.push(items[i]);
+									}
+
+									break;
+								case 340: //heavy boots
+									if (items[i].getStat(2) === 20) { //dexterity
+										sets.cowking.push(items[i]);
+									}
+
+									break;
+								case 347: //heavy belt
+									if (items[i].getStat(21) === 5) { //min damage
+										sets.iratha.push(items[i]);
+									}
+
+									break;
+								case 520: //amulet
+									if (items[i].getStat(114) === 20) { //damage to mana
+										sets.angelic.push(items[i]);
+									} else if (items[i].getStat(74) === 4) { //replenish life
+										sets.civerb.push(items[i]);
+									} else if (items[i].getStat(110) === 75) { //poison length reduced
+										sets.iratha.push(items[i]);
+									} else if (items[i].getStat(43) === 20) { //cold resist
+										sets.vidala.push(items[i]);
+									} else if (items[i].getStat(43) === 18) { //cold resist
+										sets.disciple.push(items[i]);
+									}
+
+									break;
+								case 522: //ring
+									if (items[i].getStat(74) === 6) { //replenish life
+										for (j = 0; j < sets.angelic.length; j += 1) { //do not count ring twice
+											if (sets.angelic[j].classid === items[i].classid) {
+												break idSwitch;
+											}
+										}
+
+										sets.angelic.push(items[i]);
+									}
+
+									break;
+								case 27: //sabre
+									for (j = 0; j < sets.angelic.length; j += 1) { //do not count twice in case of dual wield
+										if (sets.angelic[j].classid === items[i].classid) {
+											break idSwitch;
+										}
+									}
+
+									sets.angelic.push(items[i]);
+
+									break;
+								case 317: //ring mail
+									sets.angelic.push(items[i]);
+
+									break;
+								case 74: //short war bow
+								case 313: //quilted armor
+								case 345: //light belt
+									sets.artic.push(items[i]);
+
+									break;
+								case 16: //grand scepter
+									for (j = 0; j < sets.civerb.length; j += 1) { //do not count twice in case of dual wield
+										if (sets.civerb[j].classid === items[i].classid) {
+											break idSwitch;
+										}
+									}
+
+									sets.civerb.push(items[i]);
+
+									break;
+								case 330:
+									sets.civerb.push(items[i]);
+
+									break;
+								case 30: //broad sword
+									for (j = 0; j < sets.isenhart.length; j += 1) { //do not count twice in case of dual wield
+										if (sets.isenhart[j].classid === items[i].classid) {
+											break idSwitch;
+										}
+									}
+
+									sets.isenhart.push(items[i]);
+
+									break;
+								case 309: //full helm
+								case 320: //breast plate
+								case 333: //gothic shield
+									sets.isenhart.push(items[i]);
+
+									break;
+								case 73: //long battle bow
+								case 314: //leather armor
+								case 342: //light plated boots
+									sets.vidala.push(items[i]);
+
+									break;
+								case 316: //studded leather
+								case 352: //war hat
+									sets.cowking.push(items[i]);
+
+									break;
+								case 385: //demonhide boots
+								case 429: //dusk shroud
+								case 450: //bramble mitts
+								case 462: //mithril coil
+									sets.disciple.push(items[i]);
+
+									break;
+								case 213: //caduceus
+									for (j = 0; j < sets.griswold.length; j += 1) { //do not count twice in case of dual wield
+										if (sets.griswold[j].classid === items[i].classid) {
+											break idSwitch;
+										}
+									}
+
+									sets.griswold.push(items[i]);
+
+									break;
+								case 372: //ornate plate
+								case 427: //corona
+								case 502: //vortex shield
+									sets.griswold.push(items[i]);
+
+									break;
+								case 302: //grand matron bow
+								case 383: //battle gauntlets
+								case 391: //sharkskin belt
+								case 421: //diadem
+								case 439: //kraken shell
+									sets.mavina.push(items[i]);
+
+									break;
+								case 261: //elder staff
+								case 418: //circlet
+								case 438: //hellforge plate
+									sets.naj.push(items[i]);
+
+									break;
+								case 356: //winged helm
+								case 375: //round shield
+								case 381: //sharkskin gloves
+								case 393: //battle belt
+									sets.orphan.push(items[i]);
+
+									break;
+							}
+					}
+				}
+			}
+
+			for (i in sets) {
+				if (sets.hasOwnProperty(i)) {
+					MainSwitch:
+						switch (i) {
+							case "angelic":
+								if (sets[i].length >= 2 && type === 2) {
+									for (j = 0; j < sets[i].length; j += 1) {
+										if (!this.verifySetStats(sets[i][j], type, 10)) {
+											break MainSwitch;
+										}
+									}
+
+									setStat += 10;
+								}
+
+								break;
+							case "artic":
+								if (sets[i].length >= 2 && type === 0) {
+									for (j = 0; j < sets[i].length; j += 1) {
+										if (!this.verifySetStats(sets[i][j], type, 5)) {
+											break MainSwitch;
+										}
+									}
+
+									setStat += 5;
+								}
+
+								break;
+							case "civerb":
+								if (sets[i].length === 3 && type === 0) {
+									for (j = 0; j < sets[i].length; j += 1) {
+										if (!this.verifySetStats(sets[i][j], type, 15)) {
+											break MainSwitch;
+										}
+									}
+
+									setStat += 15;
+								}
+
+								break;
+							case "iratha":
+								if (sets[i].length === 4 && type === 2) {
+									for (j = 0; j < sets[i].length; j += 1) {
+										if (!this.verifySetStats(sets[i][j], type, 15)) {
+											break MainSwitch;
+										}
+									}
+
+									setStat += 15;
+								}
+
+								break;
+							case "isenhart":
+								if (sets[i].length >= 2 && type === 0) {
+									for (j = 0; j < sets[i].length; j += 1) {
+										if (!this.verifySetStats(sets[i][j], type, 10)) {
+											break MainSwitch;
+										}
+									}
+
+									setStat += 10;
+								}
+
+								if (sets[i].length >= 3 && type === 2) {
+									for (j = 0; j < sets[i].length; j += 1) {
+										if (!this.verifySetStats(sets[i][j], type, 10)) {
+											break MainSwitch;
+										}
+									}
+
+									setStat += 10;
+								}
+
+								break;
+							case "vidala":
+								if (sets[i].length >= 3 && type === 2) {
+									for (j = 0; j < sets[i].length; j += 1) {
+										if (!this.verifySetStats(sets[i][j], type, 15)) {
+											break MainSwitch;
+										}
+									}
+
+									setStat += 15;
+								}
+
+								if (sets[i].length === 4 && type === 0) {
+									for (j = 0; j < sets[i].length; j += 1) {
+										if (!this.verifySetStats(sets[i][j], type, 10)) {
+											break MainSwitch;
+										}
+									}
+
+									setStat += 10;
+								}
+
+								break;
+							case "cowking":
+								if (sets[i].length === 3 && type === 0) {
+									for (j = 0; j < sets[i].length; j += 1) {
+										if (!this.verifySetStats(sets[i][j], type, 20)) {
+											break MainSwitch;
+										}
+									}
+
+									setStat += 20;
+								}
+
+								break;
+							case "disciple":
+								if (sets[i].length >= 4 && type === 0) {
+									for (j = 0; j < sets[i].length; j += 1) {
+										if (!this.verifySetStats(sets[i][j], type, 10)) {
+											break MainSwitch;
+										}
+									}
+
+									setStat += 10;
+								}
+
+								break;
+							case "griswold":
+								if (sets[i].length >= 2 && type === 0) {
+									for (j = 0; j < sets[i].length; j += 1) {
+										if (!this.verifySetStats(sets[i][j], type, 20)) {
+											break MainSwitch;
+										}
+									}
+
+									setStat += 20;
+								}
+
+								if (sets[i].length >= 3 && type === 2) {
+									for (j = 0; j < sets[i].length; j += 1) {
+										if (!this.verifySetStats(sets[i][j], type, 30)) {
+											break MainSwitch;
+										}
+									}
+
+									setStat += 30;
+								}
+
+								break;
+							case "mavina":
+								if (sets[i].length >= 2 && type === 0) {
+									for (j = 0; j < sets[i].length; j += 1) {
+										if (!this.verifySetStats(sets[i][j], type, 20)) {
+											break MainSwitch;
+										}
+									}
+
+									setStat += 20;
+								}
+
+								if (sets[i].length >= 3 && type === 2) {
+									for (j = 0; j < sets[i].length; j += 1) {
+										if (!this.verifySetStats(sets[i][j], type, 30)) {
+											break MainSwitch;
+										}
+									}
+
+									setStat += 30;
+								}
+
+								break;
+							case "naj":
+								if (sets[i].length === 3 && type === 2) {
+									for (j = 0; j < sets[i].length; j += 1) {
+										if (!this.verifySetStats(sets[i][j], type, 15)) {
+											break MainSwitch;
+										}
+									}
+
+									setStat += 15;
+								}
+
+								if (sets[i].length === 3 && type === 0) {
+									for (j = 0; j < sets[i].length; j += 1) {
+										if (!this.verifySetStats(sets[i][j], type, 20)) {
+											break MainSwitch;
+										}
+									}
+
+									setStat += 20;
+								}
+
+								break;
+							case "orphan":
+								if (sets[i].length === 4 && type === 2) {
+									for (j = 0; j < sets[i].length; j += 1) {
+										if (!this.verifySetStats(sets[i][j], type, 10)) {
+											break MainSwitch;
+										}
+									}
+
+									setStat += 10;
+								}
+
+								if (sets[i].length === 4 && type === 0) {
+									for (j = 0; j < sets[i].length; j += 1) {
+										if (!this.verifySetStats(sets[i][j], type, 20)) {
+											break MainSwitch;
+										}
+									}
+
+									setStat += 20;
+								}
+
+								break;
+						}
+				}
+			}
+
+			return setStat;
+		};
+
+		// this check may not be necessary with this.validItem(), but consider it double check
+		this.verifySetStats = function (unit, type, stats) { //verify that the set bonuses are there
+			var i, temp, string;
+
+			if (type === 0) {
+				string = 3473; //to strength
+			} else {
+				string = 3474; //to dexterity
+			}
+
+			if (unit) {
+				temp = unit.description.split("\n");
+
+				for (i = 0; i < temp.length; i += 1) {
+					if (temp[i].match(getLocaleString(string), "i")) {
+						if (parseInt(temp[i].replace(/(y|ÿ)c[0-9!"+<;.*]/, ""), 10) === stats) {
+							return true;
+						}
+					}
+				}
+			}
+
+			return false;
+		};
+
+		var i, statID,
+			addedStat = 0,
+			items = me.getItems(),
+			cursorItem = getUnit(100);
+			
+		if (cursorItem) {
+			if (!Storage.Inventory.CanFit(cursorItem) || !Storage.Inventory.MoveTo(cursorItem)) {
+				//D2Bot.printToConsole("Dropped an item while getting hard stats");
+				//Misc.logItem("Dropped while gearing : ", cursorItem);
+				cursorItem.drop();
+			}
+		}
+
+		switch (type) {
+			case 0: // strength
+				type = 0;
+				statID = 220;
+
+				break;
+			case 1: // energy
+				type = 1;
+				statID = 222;
+
+				break;
+			case 2: // dexterity
+				type = 2;
+				statID = 221;
+
+				break;
+			case 3: // vitality
+				type = 3;
+				statID = 223;
+
+				break;
+		}
+
+		if (items) {
+			for (i = 0; i < items.length; i += 1) {
+				// items equipped or charms in inventory
+				if ((items[i].mode === 1 || (items[i].location === 3 && [82, 83, 84].indexOf(items[i].itemType) > -1)) && this.validItem(items[i])) {
+					// stats
+					if (items[i].getStat(type)) {
+						addedStat += items[i].getStat(type);
+					}
+
+					// stats per level
+					if (items[i].getStat(statID)) {
+						addedStat += Math.floor(items[i].getStat(statID) / 8 * me.charlvl);
+					}
+				}
+			}
+		}
+
+		return (me.getStat(type) - addedStat - this.setBonus(type));
+	},	
+	
 	// Equips an item and throws away the old equipped item
 	equip: function (item, bodyLoc) {
-		if (!this.canEquip(item)) {
+		if (!this.canEquip(item, bodyLoc)) {
 			return false;
 		}
 
@@ -500,15 +1025,62 @@ var Item = {
 			if (item.toCursor()) {
 				clickItemAndWait(0, bodyLoc);
 
-
 				if (item.bodylocation === bodyLoc) {
-					if (getCursorType() === 3) {
-						//Misc.click(0, 0, me);
-
+					if (me.itemoncursor) {
 						cursorItem = getUnit(100);
 
 						if (cursorItem) {
 							if (!Storage.Inventory.CanFit(cursorItem) || !Storage.Inventory.MoveTo(cursorItem)) {
+								D2Bot.printToConsole("Dropped item in equip()");
+								cursorItem.drop();
+							}
+						}
+					}
+
+					return true;
+				}
+			}
+		}
+
+		return false;
+	},
+	
+	equipMerc: function (item, bodyLoc) {
+		if (!this.canEquipMerc(item, bodyLoc)) {
+			return false;
+		}
+
+		if (item.mode === 1 && item.bodylocation === bodyLoc) {
+			return true;
+		}
+
+		var i, cursorItem;
+
+		if (item.location === 7) {
+			if (!Town.openStash()) {
+				return false;
+			}
+		}
+
+		for (i = 0; i < 3; i += 1) {
+			if (item.toCursor()) {
+				clickItem(4, bodyLoc);
+				delay(me.ping * 2 + 500);
+
+				if (item.bodylocation === bodyLoc) {
+					if (getCursorType() === 3) {
+						cursorItem = getUnit(100);
+
+						if (cursorItem) {
+							if (NTIP.CheckItem(cursorItem, NTIP_CheckListNoTier, true).result == 1) {
+								if (Storage.Inventory.CanFit(cursorItem)) {
+									Storage.Inventory.MoveTo(cursorItem);
+								}
+							}
+
+							cursorItem = getUnit(100);
+
+							if (cursorItem) {
 								cursorItem.drop();
 							}
 						}
@@ -527,10 +1099,14 @@ var Item = {
 
 		if (item) {
 			do {
-				if (item.bodylocation === bodyLoc) {
+				if (item.location === 1 && (item.bodylocation === bodyLoc || (((bodyLoc === 4 && item.bodylocation === 5) || (bodyLoc === 5 && item.bodylocation === 4)) && getBaseStat("items", item.classid, "2handed") === 1))) {
 					return {
 						classid: item.classid,
-						tier: NTIP.GetTier(item)
+						name: item.name,
+						tier: NTIP.GetTier(item),
+						secondarytier: NTIP.GetSecondaryTier(item),
+						str: item.getStatEx(0),
+						dex: item.getStatEx(2)
 					};
 				}
 			} while (item.getNext());
@@ -539,7 +1115,38 @@ var Item = {
 		// Don't have anything equipped in there
 		return {
 			classid: -1,
-			tier: -1
+			name: "none",
+			tier: -1,
+			secondarytier: -1,
+			str: 0,
+			dex: 0
+		};
+	},
+	
+	getEquippedItemMerc: function (bodyLoc) {
+		var merc = me.getMerc();
+		var item = merc.getItem();
+
+		if (item) {
+			do {
+				if (item.bodylocation === bodyLoc && item.location === 1) {
+					return {
+						classid: item.classid,
+						tier: NTIP.GetMercTier(item),
+						name: item.name,
+						str: item.getStatEx(0),
+						dex: item.getStatEx(2)
+					};
+				}
+			} while (item.getNext());
+		}
+
+		return {
+			classid: -1,
+			tier: -1,
+			name: "none",
+			str: 0,
+			dex: 0
 		};
 	},
 
@@ -625,6 +1232,90 @@ var Item = {
 		return bodyLoc;
 	},
 
+	getBodyLocSecondary: function (item) {
+		var bodyLoc;
+
+		switch (item.itemType) {
+		case 2: // Shield
+		case 70: // Auric Shields
+			bodyLoc = 12;
+
+			break;
+		case 5: // Arrows
+		case 6: // Bolts
+			bodyLoc = 12;
+
+			break;
+		case 24: //
+		case 25: //
+		case 26: //
+		case 27: //
+		case 28: //
+		case 29: //
+		case 30: //
+		case 31: //
+		case 32: //
+		case 33: //
+		case 34: //
+		case 35: //
+		case 36: //
+		case 42: //
+		case 43: //
+		case 44: //
+		case 67: // Handtohand (Assasin Claw)
+		case 68: //
+		case 69: //
+		case 72: //
+		case 85: //
+		case 86: //
+		case 87: //
+		case 88: //
+			bodyLoc = 11;
+
+			break;
+		default:
+			return false;
+		}
+
+		if (typeof bodyLoc === "number") {
+			bodyLoc = [bodyLoc];
+		}
+
+		return bodyLoc;
+	},
+
+	getBodyLocMerc: function (item) {
+		var bodyLoc = false, merc = me.getMerc();
+
+		switch (item.itemType) {
+			case 3: // Armor
+				bodyLoc = 3;
+
+				break;
+			case 37: // Helm
+			case 75: // Circlet
+				bodyLoc = 1;
+
+				break;
+			case 27:
+				if (merc.classid == 271) bodyLoc = 4;
+				break;
+			case 33: //
+			case 34: //
+				if (merc.classid == 338) bodyLoc = 4;
+
+				break;
+			default:
+				return false;
+		}
+
+		if (typeof bodyLoc === "number") {
+			bodyLoc = [bodyLoc];
+		}
+
+		return bodyLoc;
+	},
+	
 	autoEquipCheck: function (item) {
 		if (!Config.AutoEquip) {
 			return true;
@@ -632,32 +1323,59 @@ var Item = {
 
 		var i,
 			tier = NTIP.GetTier(item),
+			//color = Pickit.itemColor(item),
 			bodyLoc = this.getBodyLoc(item);
+		
+		var charms = [603, 604, 605];
+		if (charms.indexOf(item.classid) !== -1 && tier > 0 && Pickit.checkItem(item).result > 0) return true;
 
 		if (tier > 0 && bodyLoc) {
 			for (i = 0; i < bodyLoc.length; i += 1) {
 				// Low tier items shouldn't be kept if they can't be equipped
-				if (tier > this.getEquippedItem(bodyLoc[i]).tier && (this.canEquip(item) || !item.getFlag(0x10))) {
+				var oldTier = this.getEquippedItem(bodyLoc[i]).tier;
+				if (tier > oldTier && (this.canEquip(item) || !item.getFlag(0x10))) {
+					//D2Bot.printToConsole("New tier " + tier + " Old tier" + oldTier + " bodyloc " + bodyLoc[i]);
+					return true;
+				}
+			}
+		}
+		
+		return false;
+	},
+
+	autoEquipCheckMerc: function (item) {
+		if (!Config.AutoEquip) {
+			return true;
+		}
+
+		if (Config.AutoEquip && !me.getMerc()) {
+			return false;
+		}
+
+		var i,
+			tier = NTIP.GetMercTier(item),
+			bodyLoc = this.getBodyLocMerc(item);
+
+		if (tier > 0 && bodyLoc) {
+			for (i = 0; i < bodyLoc.length; i += 1) {
+				// Low tier items shouldn't be kept if they can't be equipped
+				var oldTier = this.getEquippedItemMerc(bodyLoc[i]).tier;
+				if (tier > oldTier && (this.canEquipMerc(item) || !item.getFlag(0x10))) {
 					return true;
 				}
 			}
 		}
 
-		// Sell/ignore low tier items, keep high tier
-		if (tier > 0 && tier < 100) {
-			return false;
-		}
-
-		return true;
+		return false;
 	},
-
+	
 	// returns true if the item should be kept+logged, false if not
 	autoEquip: function () {
 		if (!Config.AutoEquip) {
 			return true;
 		}
 
-		var i, j, tier, bodyLoc, tome, gid,
+		var i, j, tier, bodyLoc, tome, gid, scroll,
 			items = me.findItems(-1, 0);
 
 		if (!items) {
@@ -698,13 +1416,14 @@ var Item = {
 					if ([3, 7].indexOf(items[0].location) > -1 && tier > this.getEquippedItem(bodyLoc[j]).tier && this.getEquippedItem(bodyLoc[j]).classid !== 174) { // khalim's will adjustment
 						if (!items[0].getFlag(0x10)) { // unid
 							tome = me.findItem(519, 0, 3);
+							scroll = me.findItem(530, 0, 3);
 
-							if (tome && tome.getStat(70) > 0) {
+							if (tome && tome.getStat(70) > 0 || scroll) {
 								if (items[0].location === 7) {
 									Town.openStash();
 								}
 
-								Town.identifyItem(items[0], tome);
+								Town.identifyItem(items[0], scroll ? scroll : tome);
 							}
 						}
 
@@ -713,7 +1432,7 @@ var Item = {
 						print(items[0].name);
 
 						if (this.equip(items[0], bodyLoc[j])) {
-							Misc.logItem("Equipped", me.getItem(-1, -1, gid));
+							//Misc.logItem("Equipped", me.getItem(-1, -1, gid));
 						}
 
 						break;
@@ -725,10 +1444,484 @@ var Item = {
 		}
 
 		return true;
+	},
+	
+	autoEquipMerc: function () {
+		if (!Config.AutoEquip || !me.getMerc()) {
+			return true;
+		}
+
+		var i, j, tier, bodyLoc, tome, gid, classid, scroll,
+			items = me.findItems(-1, 0);
+
+		if (!items) {
+			return false;
+		}
+
+		function sortEq(a, b) {
+			if (Item.canEquipMerc(a) && Item.canEquipMerc(b)) {
+				return NTIP.GetMercTier(b) - NTIP.GetMercTier(a);
+			}
+
+			if (Item.canEquipMerc(a)) {
+				return -1;
+			}
+
+			if (Item.canEquipMerc(b)) {
+				return 1;
+			}
+
+			return 0;
+		}
+
+		me.cancel();
+
+		// Remove items without tier
+		for (i = 0; i < items.length; i += 1) {
+			if (NTIP.GetMercTier(items[i]) === 0) {
+				items.splice(i, 1);
+
+				i -= 1;
+			}
+		}
+
+		while (items.length > 0) {
+			items.sort(sortEq);
+
+			tier = NTIP.GetMercTier(items[0]);
+			bodyLoc = this.getBodyLocMerc(items[0]);
+
+			if (tier > 0 && bodyLoc) {
+				for (j = 0; j < bodyLoc.length; j += 1) {
+					if ([3, 7].indexOf(items[0].location) > -1 && tier > this.getEquippedItemMerc(bodyLoc[j]).tier) { // khalim's will adjustment
+						if (!items[0].getFlag(0x10)) { // unid
+							tome = me.findItem(519, 0, 3);
+							scroll = me.findItem(530, 0, 3);
+
+							if ((tome && tome.getStat(70) > 0) || scroll) {
+								if (items[0].location === 7) {
+									Town.openStash();
+								}
+
+								Town.identifyItem(items[0], scroll ? scroll : tome);
+							}
+						}
+
+						gid = items[0].gid;
+						classid = items[0].classid;
+
+						if (this.equipMerc(items[0], bodyLoc[j])) {
+							//print("Equiped Merc item.")
+						}
+
+						break;
+					}
+				}
+			}
+
+			items.shift();
+		}
+
+		return true;
+	},
+
+	removeItemsMerc: function () {
+		let cursorItem;
+		let merc = me.getMerc();
+
+		if (!merc) {
+			return true;
+		}
+
+		let items = merc.getItems();
+
+		if (items) {
+			//items.forEach(function(i) {
+			for (var i = 0; i < items.length; i++) {
+				clickItem(4, items[i].bodylocation);
+				//clickItem(4, i.bodylocation);
+				delay(me.ping * 2 + 500);
+
+				cursorItem = getUnit(100);
+
+				if (cursorItem) {
+					if (Storage.Inventory.CanFit(cursorItem)) {
+						Storage.Inventory.MoveTo(cursorItem);
+					} else {
+						cursorItem.drop();
+					}
+				}
+			}
+		}
+
+		return !!merc.getItem();
+	},
+	
+	hasSecondaryTier: function (item) {
+		return Config.AutoEquip && NTIP.GetSecondaryTier(item) > 0 && !me.classic;
+	},
+	
+	secondaryEquip: function (item, bodyloc, keep) {
+		if (!this.canEquip(item) && !me.classic) {
+			return false;
+		}
+
+		// Already equipped in the right slot
+		if (item.mode === 1 && item.bodylocation === bodyloc) {
+			return true;
+		}
+
+		var i, cursorItem;
+
+		if (item.location === 7) {
+			if (!Town.openStash()) {
+				return false;
+			}
+		}
+		// Swapping to Secondary
+		Attack.weaponSwitch(1);
+	
+		for (i = 0; i < 3; i += 1) {
+			if (item.toCursor()) {
+				clickItem(0, bodyloc - 7);
+				delay(me.ping * 2 + 500);
+
+				if (item.bodylocation === bodyloc - 7) {
+					if (getCursorType() === 3) {
+						//Misc.click(0, 0, me);
+	
+						cursorItem = getUnit(100);
+
+						if (cursorItem) {
+							if (NTIP.CheckItem(cursorItem, NTIP_CheckListNoTier, true).result == 1 || this.autoEquipCheckMerc(cursorItem) || keep) {
+								if (Storage.Inventory.CanFit(cursorItem)) {
+									Storage.Inventory.MoveTo(cursorItem);
+								}
+							}
+
+							cursorItem = getUnit(100);
+
+							if (cursorItem) {
+								cursorItem.drop();
+							}
+						}
+					}
+
+					Attack.weaponSwitch(0);
+					return true;
+				}
+			}
+		}
+		
+		Attack.weaponSwitch(0); 
+		return false;
+	},
+	
+	autoEquipCheckSecondary: function (item) {
+		if (!Config.AutoEquip) {
+			return true;
+		}
+		
+		if (me.classic) {
+			return false;
+		}
+
+		var i,
+		tier = NTIP.GetSecondaryTier(item),
+        bodyLoc = Item.getBodyLocSecondary(item);
+	
+		for (i = 0; tier > 0 && i < bodyLoc.length; i += 1) {
+			if (tier > Item.getEquippedItem(bodyLoc[i]).secondarytier && (Item.canEquip(item) || !item.getFlag(0x10))) {
+				return true;
+			}
+		}
+
+		return false;
+	},
+	
+	autoEquipSecondary: function () {
+		if (!Config.AutoEquip || me.classic) {
+			return true;
+		}
+
+		var i, j, tier, bodyLoc, tome, gid, scroll,
+			items = me.findItems(-1, 0);
+
+		if (!items) {
+			return false;
+		}
+
+		function sortEq(a, b) {
+			if (Item.canEquip(a)) {
+				return -1;
+			}
+
+			if (Item.canEquip(b)) {
+				return 1;
+			}
+
+			return 0;
+		}
+
+		me.cancel();
+
+		// Remove items without tier
+		for (i = 0; i < items.length; i += 1) {
+			if (NTIP.GetSecondaryTier(items[i]) === 0) {
+				items.splice(i, 1);
+				i -= 1;
+			}
+		}
+
+		//Attack.weaponSwitch(1);
+		while (items.length > 0) {
+			items.sort(sortEq);
+
+			tier = NTIP.GetSecondaryTier(items[0]);
+			bodyLoc = this.getBodyLocSecondary(items[0]);
+		
+			if ((tier > 0) && bodyLoc) {
+				for (j = 0; j < bodyLoc.length; j += 1) {
+					if ([3, 7].indexOf(items[0].location) > -1 && tier > this.getEquippedItem(bodyLoc[j]).secondarytier && this.getEquippedItem(bodyLoc[j]).classid !== 174) { // khalim's will adjustment
+						if (!items[0].getFlag(0x10)) { // unid
+							tome = me.findItem(519, 0, 3);
+							scroll = me.findItem(530, 0, 3);
+		
+							if ((tome && tome.getStat(70) > 0) || scroll) {
+								if (items[0].location === 7) {
+										Town.openStash();
+								}
+
+								Town.identifyItem(items[0], scroll ? scroll : tome);
+							}
+						}
+							gid = items[0].gid;
+						if (this.secondaryEquip(items[0], bodyLoc[j])) {
+							print("Autoequipped switch item");
+							//Misc.logItem("Equipped", me.getItem(-1, -1, gid));
+						}
+						//Attack.weaponSwitch(0);
+						break;
+					}
+				}
+			}
+			items.shift();
+		}
+		//Attack.weaponSwitch(0);
+		return true;
 	}
 };
 
 var Misc = {
+	charClass: [
+		"Amazon",
+		"Sorceress",
+		"Necromancer",
+		"Paladin",
+		"Barbarian",
+		"Druid",
+		"Assassin"
+	],
+	
+	difficultyString: [
+		"Normal",
+		"Nightmare",
+		"Hell"
+	],
+	
+	updateConfig: function() {
+		scriptBroadcast("config--" + JSON.stringify(Misc.copy(Config)));
+	},
+	
+	mercPower: function () {
+		var power = 0,
+			merc = me.getMerc();
+		
+		if (!merc) return 0;
+		
+		power += merc.getStat(6) * 3																//MaxLife 		- 2000life	- 6000
+		power += ((merc.getStat(23) + merc.getStat(24)) / 2) * 75									//Avg wep dmg	- 320dmg CA	- 24000
+		power += merc.getStat(31) 																	//Defense 		- 2500def 	- 2500
+		power += merc.getStat(36) * 1000 															//Damage reduce - 10dr 		- 10000
+		power += Math.min(merc.getStat(39) - [0, 40, 100][me.diff], 75 + merc.getStat(40)) * 150	//Fire res 		- 60fr 		- 9000
+		power += Math.min(merc.getStat(41) - [0, 40, 100][me.diff], 75 + merc.getStat(42)) * 150	//Light res 	- 60lr 		- 9000
+		power += Math.min(merc.getStat(43) - [0, 40, 100][me.diff], 75 + merc.getStat(44)) * 150	//Cold res 		- 60cr 		- 9000
+		power += merc.getStat(60) ? (merc.getStat(60) * 500) + 6000 : 0								//Life leech 	- 8LL 		- 10000
+		
+		print("Merc power : " + power);
+		
+		return power;
+	},
+	
+	useSocketQuest: function(item) {
+		var larzuk, slot, invo, i, items;
+		
+		if (!item || item === undefined || item.mode === 3) { //No item
+			return false;
+		}
+		
+		if (!me.getQuest(35, 1)) { //Quest not available
+			return false;
+		}
+		
+		if (item.getStat(194) > 0 || getBaseStat("items", item.classid, "gemsockets") === 0) { //Item can't be socketed
+			return false;
+		}
+		
+		if (!isIncluded("common/Storage.js")) {
+			include("common/Storage.js");
+		}
+		
+		if (!isIncluded("common/Town.js")) {
+			include("common/Town.js");
+		}
+		
+		if (!Storage.Inventory.CanFit(item)) { //No space to get the item back
+			return false;
+		}
+		
+		if (me.act !== 5 || !me.inTown) {
+			if (!Town.goToTown(5)) {
+				return false;
+			}
+		}
+		
+		if (item.location === 7 && !Storage.Inventory.MoveTo(item)) {
+			return false;
+		}
+		
+		invo = me.findItems(-1, 0, 3);
+		slot = item.bodylocation;
+		
+		for (i = 0; i < invo.length; i++) { //Take note of all the items in the invo minus the item to socket
+			if (item.gid !== invo[i].gid) {
+				invo[i] = invo[i].x + "/" + invo[i].y;
+			}
+		}
+		
+		for (i = 0; i < 3; i++) {
+			larzuk = getUnit(1, "Larzuk");
+			
+			if (larzuk) {
+				break;
+			} else {
+				Town.move("stash");
+			}
+		}
+		
+		if (!larzuk) 			return false;
+		if (!item.toCursor()) 	return false;
+		
+		sendPacket(1, 0x38, 4, 0x00, 4, larzuk.gid, 4, item.gid);
+		delay(500 + me.ping);
+		sendPacket(1, 0x40);
+		
+		item = false; //Delete item reference, it's not longer valid anyway
+		items = me.findItems(-1, 0, 3);
+		
+		for (i = 0; i < items.length; i++) {
+			if (invo.indexOf(items[i].x + "/" + items[i].y) === -1) {
+				item = items[i];
+			}
+		}
+		
+		if (!item || item.getStat(194) === 0) {
+			print("Failed to socket item");
+			return false;
+		}
+		
+		Misc.logItem("Used my " + Misc.difficultyString[me.diff] + " socket quest on : ", item);
+		if (slot) Item.equip(item, slot);
+	
+		return true;
+	},
+	
+	randomString: function(len, num) {
+		let possible = 'abcdefghijklmnopqrstuvwxyz';
+
+		if (num) {
+			possible += '0123456789';
+		}
+
+		let text = '';
+
+		for (let i = 0; i < len; i += 1) {
+			text += possible.charAt(Math.floor(Math.random() * possible.length));
+		}
+
+		return text;
+	},
+	
+	dataAction: {
+		create: function(path, obj, format=2) {
+			return Misc.fileAction(path, 1, JSON.stringify(obj, null, format));
+		},
+		
+		read: function(path) {
+			return JSON.parse(Misc.fileAction(path, 0));
+		},
+		
+		update: function(path, prop, value, format=2) {
+			let obj = this.read(path);
+
+			if (obj.hasOwnProperty(prop) && Array.isArray(obj[prop])) {
+				if (obj[prop].includes(value)) {
+					return true;
+				} else {
+					obj[prop].push(value);
+				}
+			} else {
+				obj[prop] = value;
+			}
+
+			return Misc.fileAction(path, 1, JSON.stringify(obj, null, format));
+		},
+		
+		delete: function(path, prop) {
+
+		}
+	},	
+	
+	//Socket stuff into an item
+	socketItems: function (base, what) {
+		var i, item;
+		if (what instanceof Array) {} else { what = [what]; }
+
+		if (base.getStat(194) < what.length) return false;
+
+		var subItems = base.getItems();
+		for (i = 0; i < Math.min(subItems.length, what.length); i++) {
+			if (what[i] instanceof Number) {
+				if (what[i] !== subItems[i].classid) {
+					return false;
+				}
+			} else if (what[i] instanceof String) {
+				if (what[i] !== subItems[i].name) {
+					return false;
+				}
+			}
+		}
+
+		if (what.length === subItems.length) return true;
+		if (!Town.openStash()) return false;
+
+		for (i = 0; i < what.length; i++) {
+			item = me.findItem(what[i]);
+			if (!item) return false;
+			
+			if (me.itemoncursor) {
+				if (!Storage.Inventory.MoveTo(getUnit(100))) {
+					getUnit(100).drop();
+				}
+			}
+
+			if (!Runewords.socketItem(base, item)) return false;
+		}
+
+		print("Socketed " + base.name + " with " + what.length + " items.");
+		return true;
+	},	
+	
 	// Click something
 	click: function (button, shift, x, y) {
 		if (arguments.length < 2) {
@@ -849,10 +2042,6 @@ var Misc = {
 	getPlayerAct: function (player) {
 		var unit = this.findPlayer(player);
 
-		if (!unit) {
-			return false;
-		}
-
 		if (unit.area <= 39) {
 			return 1;
 		}
@@ -921,7 +2110,7 @@ var Misc = {
 
 		var i, tick;
 
-		for (i = 0; i < 3; i += 1) {
+		for (i = 0; i < 5; i += 1) {
 			if (Pather.moveTo(unit.x + 1, unit.y + 2, 3) && getDistance(me, unit.x + 1, unit.y + 2) < 5) {
 				//Misc.click(0, 0, unit);
 				sendPacket(1, 0x13, 4, unit.type, 4, unit.gid);
@@ -1143,12 +2332,21 @@ var Misc = {
 			return false;
 		}
 
-		var i, tick;
+		var i, tick,
+			telek = me.classid === 1 && me.getSkill(43, 1);
 
 		for (i = 0; i < 3; i += 1) {
-			if (getDistance(me, unit) < 4 || Pather.moveToUnit(unit, 3, 0)) {
-				Misc.click(0, 0, unit);
-				//unit.interact();
+			if (telek) {
+				if (getDistance(me, unit) > 13) {
+					Attack.getIntoPosition(unit, 13, 0x4);
+				}
+				
+				Skill.cast(43, 0, unit);
+			} else {
+				if (getDistance(me, unit) < 4 || Pather.moveToUnit(unit, 3, 0)) {
+					Misc.click(0, 0, unit);
+					//unit.interact();
+				}
 			}
 
 			tick = getTickCount();
@@ -1367,48 +2565,62 @@ var Misc = {
 
 		var i;
 
-		if (!Config.LogKeys && ["pk1", "pk2", "pk3"].indexOf(unit.code) > -1) {
-			return false;
-		}
-
-		if (!Config.LogOrgans && ["dhn", "bey", "mbr"].indexOf(unit.code) > -1) {
-			return false;
-		}
-
-		if (!Config.LogLowRunes && ["r01", "r02", "r03", "r04", "r05", "r06", "r07", "r08", "r09", "r10", "r11", "r12", "r13", "r14"].indexOf(unit.code) > -1) {
-			return false;
-		}
-
-		if (!Config.LogMiddleRunes && ["r15", "r16", "r17", "r18", "r19", "r20", "r21", "r22", "r23"].indexOf(unit.code) > -1) {
-			return false;
-		}
-
-		if (!Config.LogHighRunes && ["r24", "r25", "r26", "r27", "r28", "r29", "r30", "r31", "r32", "r33"].indexOf(unit.code) > -1) {
-			return false;
-		}
-
-		if (!Config.LogLowGems && ["gcv", "gcy", "gcb", "gcg", "gcr", "gcw", "skc", "gfv", "gfy", "gfb", "gfg", "gfr", "gfw", "skf", "gsv", "gsy", "gsb", "gsg", "gsr", "gsw", "sku"].indexOf(unit.code) > -1) {
-			return false;
-		}
-
-		if (!Config.LogHighGems && ["gzv", "gly", "glb", "glg", "glr", "glw", "skl", "gpv", "gpy", "gpb", "gpg", "gpr", "gpw", "skz"].indexOf(unit.code) > -1) {
-			return false;
-		}
-
-		for (i = 0; i < Config.SkipLogging.length; i++) {
-			if (Config.SkipLogging[i] === unit.classid || Config.SkipLogging[i] === unit.code) {
+		if (!!Config) { // Don't check for config settings if there's no config loaded
+			if (NTIP_QuestItems.indexOf(unit.classid) > -1) {
 				return false;
+			}
+
+			if (!Config.LogKeys && ["pk1", "pk2", "pk3"].indexOf(unit.code) > -1) {
+				return false;
+			}
+
+			if (!Config.LogOrgans && ["dhn", "bey", "mbr"].indexOf(unit.code) > -1) {
+				return false;
+			}
+
+			if (!Config.LogLowRunes && ["r01", "r02", "r03", "r04", "r05", "r06", "r07", "r08", "r09", "r10", "r11", "r12", "r13", "r14"].indexOf(unit.code) > -1) {
+				return false;
+			}
+
+			if (!Config.LogMiddleRunes && ["r15", "r16", "r17", "r18", "r19", "r20", "r21", "r22", "r23"].indexOf(unit.code) > -1) {
+				return false;
+			}
+
+			if (!Config.LogHighRunes && ["r24", "r25", "r26", "r27", "r28", "r29", "r30", "r31", "r32", "r33"].indexOf(unit.code) > -1) {
+				return false;
+			}
+
+			if (!Config.LogLowGems && ["gcv", "gcy", "gcb", "gcg", "gcr", "gcw", "skc", "gfv", "gfy", "gfb", "gfg", "gfr", "gfw", "skf", "gsv", "gsy", "gsb", "gsg", "gsr", "gsw", "sku"].indexOf(unit.code) > -1) {
+				return false;
+			}
+
+			if (!Config.LogHighGems && ["gzv", "gly", "glb", "glg", "glr", "glw", "skl", "gpv", "gpy", "gpb", "gpg", "gpr", "gpw", "skz"].indexOf(unit.code) > -1) {
+				return false;
+			}
+
+			for (i = 0; i < Config.SkipLogging.length; i++) {
+				if (Config.SkipLogging[i] === unit.classid || Config.SkipLogging[i] === unit.code) {
+					return false;
+				}
 			}
 		}
 
 		var lastArea, code, desc, sock, itemObj,
 			color = -1,
+			name;
+		
+		try {
 			name = unit.fname.split("\n").reverse().join(" ").replace(/ÿc[0-9!"+<:;.*]|\/|\\/g, "").trim();
-
+		} catch (e) {
+			//D2Bot.printToConsole("Misc.logItem() error on unit : " + JSON.stringify(unit));
+			return false;
+		}
+		
+		
 		desc = this.getItemDesc(unit);
 		color = unit.getColor();
 
-		if (action.match("kept", "i")) {
+		if (action.match("kept", "i") && !action.match("runeword kept", "i")) {
 			lastArea = DataFile.getStats().lastArea;
 
 			if (lastArea) {
@@ -1769,6 +2981,15 @@ var Misc = {
 		}
 
 		if (check) {
+			var tome = me.getItem(518);
+			
+			if (!tome || tome.getStat(70) < 1) {
+				if (!me.getItem(529)) {
+					delay(500);
+					return false;
+				}
+			}
+			
 			scriptBroadcast("townCheck");
 			delay(500);
 
@@ -2198,6 +3419,69 @@ var Experience = {
 };
 
 var Packet = {
+	entityAction: function(npc) {
+		let entity = getUnit(1, npc);
+
+		while (!entity) {
+			Town.move(npc);
+			Packet.flash(me.gid);
+			delay(me.ping * 2);
+
+			entity = getUnit(1, npc);
+		}
+		
+		switch (npc.toLowerCase()) {
+			case "akara":
+				sendPacket(1, 0x38, 4, 0, 4, entity.gid, 4, 0);
+				break;
+			default:
+				sendPacket(1, 0x38, 4, 0, 4, entity.gid, 4, 0);
+		}
+
+		return true;
+	},
+	
+	questMessage: function(where, who, message) {
+		let npc = getUnit(1, who);
+
+		while (!npc) {
+			Town.move(where);
+			Packet.flash(me.gid);
+			delay(me.ping * 2);
+
+			npc = getUnit(1, who);
+		}
+
+		if (npc) {
+			let tick = getTickCount();
+
+			while (getTickCount() - tick < 1000) {
+				sendPacket(1, 0x31, 4, npc.gid, 4, message);
+				delay(me.ping);
+			}
+
+			return true;
+		}
+
+		return false;
+	},
+	
+	checkQuest: function (id, state, time=5) {
+		let tick = getTickCount();
+
+		while (getTickCount() - tick < time) {
+			sendPacket(1, 0x40);
+
+			if (me.getQuest(id, state)) {
+				return true;
+			}
+
+			delay(5);
+		}
+
+		return false;
+	},
+	
 	openMenu: function (unit) {
 		if (unit.type !== 1) {
 			throw new Error("openMenu: Must be used on NPCs.");
@@ -2210,11 +3494,12 @@ var Packet = {
 		var i, tick;
 
 		for (i = 0; i < 5; i += 1) {
-			if (getDistance(me, unit) > 4) {
+			if (getDistance(me, unit) > 3) {
 				Pather.moveToUnit(unit);
 			}
 
 			sendPacket(1, 0x13, 4, 1, 4, unit.gid);
+			//unit.interact();
 			tick = getTickCount();
 
 			while (getTickCount() - tick < 5000) {
@@ -2224,18 +3509,21 @@ var Packet = {
 					return true;
 				}
 
-				if (getInteractedNPC() && getTickCount() - tick > 1000) {
+				if (getInteractedNPC()) {
+					delay(me.ping * 2 + 400);
 					me.cancel();
+					me.cancel();
+					break;
 				}
 
 				delay(100);
 			}
 
-			sendPacket(1, 0x2f, 4, 1, 4, unit.gid);
-			delay(me.ping * 2);
-			sendPacket(1, 0x30, 4, 1, 4, unit.gid);
-			delay(me.ping * 2);
-			this.flash(me.gid);
+			//sendPacket(1, 0x2f, 4, 1, 4, unit.gid);
+			//delay(me.ping * 2);
+			//sendPacket(1, 0x30, 4, 1, 4, unit.gid);
+			//delay(me.ping * 2);
+			//this.flash(me.gid);
 		}
 
 		return false;
@@ -2386,7 +3674,7 @@ CursorLoop:
 	},
 
 	itemToCursor: function (item) {
-		var i, tick;
+		var i, x, tick, ws;
 
 		if (me.itemoncursor) { // Something already on cursor
 			if (getUnit(100).gid === item.gid) { // Return true if the item is already on cursor
@@ -2395,10 +3683,28 @@ CursorLoop:
 
 			this.dropItem(getUnit(100)); // If another item is on cursor, drop it
 		}
+		
+		if (item.location === 7 && !getUIFlag(0x19)) {
+			if (!Town.openStash()) return false
+		}
+		
+		ws = me.weaponswitch;
 
 		for (i = 0; i < 15; i += 1) {
-			if (item.mode === 1) { // equipped
-				sendPacket(1, 0x1c, 2, item.bodylocation);
+			if (item.getParent().name !== me.name) { //item on merc
+				sendPacket(1, 0x61, 2, item.bodylocation);
+			} else if (item.mode === 1) { // equipped
+				if (item.bodylocation === 11 || item.bodylocation === 12) {
+					sendPacket(1, 0x60);
+					
+					for (x = 0; me.weaponswitch === ws && x < 200; x++) {
+						delay(3);
+					}
+					
+					if (ws === me.weaponswitch) continue; //Failed to switch, no use trying to pick up item.
+				}
+			
+				sendPacket(1, 0x1c, 2, item.bodylocation);	
 			} else {
 				sendPacket(1, 0x19, 4, item.gid);
 			}
@@ -2411,6 +3717,14 @@ CursorLoop:
 				}
 
 				delay(10);
+			}
+		}
+		
+		if (me.weaponswitch !== ws) {
+			sendPacket(1, 0x60);
+			
+			for (i = 0; me.weaponswitch !== ws && i < 200; i++) {
+				delay(3);
 			}
 		}
 
@@ -2451,8 +3765,8 @@ CursorLoop:
 		sendPacket(1, hand, 4, who.type, 4, who.gid);
 	},
 
-	moveNPC: function (npc, dwX, dwY) { // commented the patched packet
-		//sendPacket(1, 0x59, 4, npc.type, 4, npc.gid, 4, dwX, 4, dwY);
+	moveNPC: function (npc, dwX, dwY) { // patched packet mostly*
+		sendPacket(1, 0x59, 4, npc.type, 4, npc.gid, 4, dwX, 4, dwY);
 	},
 
 	teleWalk: function (x, y, maxDist) {
@@ -2526,6 +3840,51 @@ Example (Spoof 'reassign player' packet to client):
 Example (Spoof 'player move' packet to server):
 	new PacketBuilder().byte(0x3).word(x).word(y).send();
 */
+
+// d2bs rand() hooks the game rng which uses previous rng value to calculate next, which is therefore not random at all if two processes just started for example.
+// rng can be reliably predicted because of this and the pure javascript way solves this for the most part.
+// d2bs rand() also can't handle ranges with only two outcomes, rand(0,1) always returns 1.
+function rand(min, max) { // Min (inclusive) to Max (inclusive)
+	min = Math.floor(min); // Make sure we're using integers
+	max = Math.floor(max);
+	return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function getUnits(...args) {
+	let units = [], unit = getUnit.apply(null, args);
+
+	if (!unit) {
+		return [];
+	}
+	do {
+		units.push(copyUnit(unit));
+	} while (unit.getNext());
+	return units;
+}
+
+function clickItemAndWait(...args) {
+	let before,
+		itemEvent = false,
+		timeout = getTickCount(),timedOut;
+
+	before = !me.itemoncursor;
+	clickItem.apply(undefined, args);
+	delay(Math.max(me.ping * 2, 250));
+
+
+	while (true) { // Wait until item is picked up.
+		delay(3);
+
+		if (before !== !!me.itemoncursor || (timedOut = getTickCount() - timeout > Math.min(1000, 100 + (me.ping * 4)))) {
+			break; // quit the loop of item on cursor has changed
+		}
+	}
+
+	delay(Math.max(me.ping, 50));
+
+	// return item if we didnt timeout
+	return !timedOut;
+}
 
 function PacketBuilder () {
 	/* globals DataView ArrayBuffer */
@@ -2734,3 +4093,4 @@ var Events = {
 		return false;
 	}
 };
+
